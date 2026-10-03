@@ -81,3 +81,89 @@ Monitors → Alerts → Create Alert, проект `python`, все поля о�
 Тело письма-оповещения:
 
 ![email](img/10-email.png)
+
+#
+## Задание повышенной сложности
+
+1. Создайте проект на ЯП Python или GO (около 10–20 строк), подключите к нему sentry SDK и отправьте несколько тестовых событий.
+2. Поэкспериментируйте с различными передаваемыми параметрами, но помните об ограничениях Free учётной записи Cloud Sentry.
+3. В качестве решения задания пришлите скриншот меню issues вашего проекта и пример кода подключения sentry sdk/отсылки событий.
+
+**Решение:**
+
+Скрипт [app/main.py](app/main.py) (sentry-sdk 2.71.0). DSN не хранится в репозитории и передаётся через переменную окружения:
+
+```bash
+cd app
+python3 -m venv .venv && .venv/bin/pip install sentry-sdk
+SENTRY_DSN='https://<key>@<org>.ingest.de.sentry.io/<project>' .venv/bin/python main.py
+```
+
+```python
+#!/usr/bin/env python3
+"""Отправка тестовых событий в Sentry. DSN берётся из переменной окружения SENTRY_DSN."""
+import logging
+import os
+
+import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
+
+sentry_sdk.init(
+    dsn=os.environ["SENTRY_DSN"],
+    environment="homework",
+    release="netology-sentry@1.0.0",
+    traces_sample_rate=1.0,  # транзакции тоже уходят в Sentry (лимит Free — 10k)
+    integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
+)
+sentry_sdk.set_user({"id": "42", "username": "student"})
+sentry_sdk.set_tag("homework", "10-monitoring-05")
+
+
+def divide(a, b):
+    return a / b
+
+
+with sentry_sdk.start_transaction(op="task", name="homework-run"):
+    # 1. необработанное деление на ноль, пойманное и отправленное вручную
+    try:
+        divide(1, 0)
+    except ZeroDivisionError as e:
+        sentry_sdk.capture_exception(e)
+
+    # 2. сообщение с уровнем warning и дополнительным контекстом
+    sentry_sdk.set_context("order", {"id": 1001, "amount": 250})
+    sentry_sdk.capture_message("Order total looks suspicious", level="warning")
+
+    # 3. logging.error превращается в событие через LoggingIntegration
+    logging.info("breadcrumb: about to read config")  # попадёт в breadcrumbs
+    logging.error("Config file not found: /etc/app.yml")
+
+    # 4. KeyError с другим тегом
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("component", "billing")
+        try:
+            {}["missing_key"]
+        except KeyError as e:
+            sentry_sdk.capture_exception(e)
+
+sentry_sdk.flush()
+print("events sent")
+```
+
+Какие параметры передаются и где их видно в Sentry:
+
+- `environment="homework"`, `release="netology-sentry@1.0.0"` — окружение и релиз события (видны в шапке issue: `homework`, `1.0.0`);
+- `set_user` — пользователь `42 student`; `set_tag` — тег `homework`, а для KeyError через отдельный scope — тег `component: billing`;
+- `set_context("order", ...)` — произвольный контекст в разделе Context;
+- `traces_sample_rate=1.0` + `start_transaction` — все события привязаны к транзакции `homework-run` (колонка под названием issue);
+- `capture_exception` — handled-исключения с полным stack trace (ZeroDivisionError, KeyError);
+- `capture_message(..., level="warning")` — событие-сообщение без исключения;
+- `LoggingIntegration` — `logging.error` превращается в событие, `logging.info` попадает в breadcrumbs.
+
+Меню Issues проекта (4 события из SDK + sample event `PYTHON-6` из задания 3):
+
+![issues](img/08-issues-sdk.png)
+
+Одно из событий SDK — видны пользователь, релиз, окружение, транзакция и stack trace с кодом `main.py`:
+
+![sdk issue](img/09-sdk-issue.png)
